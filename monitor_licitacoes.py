@@ -60,21 +60,40 @@ KEYWORDS_COMPOSTAS = [
 
 # Keywords exclusivas por estado
 KEYWORDS_PR = [
-    "proerd",           # Programa Educacional de Resistência às Drogas (PR)
+    "proerd",
     "cartilha proerd",
+]
+
+# Termos que ELIMINAM o edital — fora do segmento
+KEYWORDS_EXCLUSAO = [
+    "pavimentação", "pavimentacao", "pavimento",
+    "recape", "recapeamento", "asfalto", "asfáltico", "asfaltico",
+    "obras de engenharia", "obra de engenharia",
+    "construção", "construcao", "reforma predial",
+    "drenagem", "esgoto", "saneamento",
+    "terraplanagem", "aterro",
+    "ponte", "viaduto", "galeria",
+    "elétrica", "eletrica", "instalação elétrica",
+    "hidráulica", "hidraulica",
+    "lona de freio", "lona de caminhão",
 ]
 
 def contem_keyword(texto: str, uf: str = "") -> bool:
     if not texto:
         return False
     t = texto.lower()
+
+    # Eliminar imediatamente se contém termos fora do segmento
+    if any(k in t for k in KEYWORDS_EXCLUSAO):
+        return False
+
     # Keywords exclusivas do PR
     if uf == "PR" and any(k in t for k in KEYWORDS_PR):
         return True
     # Match direto nas primárias
     if any(k in t for k in KEYWORDS_PRIMARIAS):
         return True
-    # Para compostas, exige que apareça junto com termos gráficos
+    # Para compostas, exige contexto gráfico
     CONTEXTO = ["gráf", "graf", "impress", "visual", "print", "tipograf"]
     if any(k in t for k in KEYWORDS_COMPOSTAS):
         return any(c in t for c in CONTEXTO)
