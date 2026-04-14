@@ -1,14 +1,17 @@
 import requests
 import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 import os
 
 # ──────────────────────────────────────────────
 # CONFIGURAÇÃO
 # ──────────────────────────────────────────────
-BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
+GMAIL_USER = os.environ.get("GMAIL_USER", "")        # ex: licitacao.jkartesgraficas@gmail.com
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 EMAIL_DESTINO = "licitacao.jkartesgraficas@gmail.com"
-EMAIL_FROM = "a7c066001@smtp-brevo.com"
 EMAIL_FROM_NAME = "JK Licitações"
 
 KEYWORDS = [
@@ -278,28 +281,24 @@ def montar_html(editais: list[dict]) -> str:
 
 
 # ──────────────────────────────────────────────
-# ENVIAR E-MAIL VIA BREVO
+# ENVIAR E-MAIL VIA GMAIL SMTP
 # ──────────────────────────────────────────────
 def enviar_email(html: str, total: int):
     data_ref = HOJE.strftime("%d/%m/%Y")
     assunto = f"Licitações JK — {total} edital(is) encontrado(s) em {data_ref}"
 
-    payload = {
-        "sender": {"name": EMAIL_FROM_NAME, "email": EMAIL_FROM},
-        "to": [{"email": EMAIL_DESTINO}],
-        "subject": assunto,
-        "htmlContent": html,
-    }
-    headers = {
-        "api-key": BREVO_API_KEY,
-        "Content-Type": "application/json",
-    }
-    r = requests.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers, timeout=20)
-    if r.status_code in (200, 201):
-        print(f"[EMAIL] Enviado com sucesso: {r.json().get('messageId')}")
-    else:
-        print(f"[EMAIL] Erro {r.status_code}: {r.text}")
-        raise Exception(f"Falha ao enviar e-mail: {r.status_code}")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = assunto
+    msg["From"] = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
+    msg["To"] = EMAIL_DESTINO
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_USER, EMAIL_DESTINO, msg.as_string())
+    print(f"[EMAIL] Enviado com sucesso via Gmail SMTP")
 
 
 # ──────────────────────────────────────────────
