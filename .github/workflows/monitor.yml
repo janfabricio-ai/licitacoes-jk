@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0 10 * * *"   # 10h UTC = 7h Brasília
   workflow_dispatch:        # permite rodar manualmente
+  push:
+    branches: [main]        # dispara a cada push no main
 
 jobs:
   monitorar:
