@@ -12,18 +12,24 @@ EMAIL_FROM = "a7c066001@smtp-brevo.com"
 EMAIL_FROM_NAME = "JK Licitações"
 
 KEYWORDS = [
-    "gráfica", "grafica", "impressão", "impressao", "banner", "faixa",
-    "comunicação visual", "comunicacao visual", "plotagem", "adesivo",
-    "folder", "panfleto", "cartaz", "material gráfico", "material grafico",
+    "gráfica", "grafica", "gráfico", "grafico", "gráficos", "graficos",
+    "impressão", "impressao", "impressos", "imprimir",
+    "banner", "faixa", "lona", "vinil", "adesivo",
+    "comunicação visual", "comunicacao visual",
+    "plotagem", "ploter", "plotter",
+    "folder", "panfleto", "cartaz", "panfletos", "cartazes",
+    "material gráfico", "material grafico", "serviço gráfico", "servico grafico",
     "offset", "off-set", "serigrafia", "sublimação", "sublimacao",
-    "impressos", "brochura", "catálogo", "catalogo", "etiqueta",
-    "embalagem", "lona", "vinil", "ploter"
+    "brochura", "catálogo", "catalogo", "etiqueta",
+    "embalagem", "confecção de carimbos", "confeccao de carimbos",
+    "diagramação", "diagramacao",
 ]
 
 ESTADOS = ["PR", "SP", "SC", "RS"]
 
 HOJE = datetime.now()
 ONTEM = HOJE - timedelta(days=1)
+DATA_CORTE = (HOJE - timedelta(days=30)).strftime("%Y-%m-%d")   # aceita até 30 dias
 DATA_INICIAL = ONTEM.strftime("%Y%m%d")
 DATA_FINAL = HOJE.strftime("%Y%m%d")
 
@@ -50,45 +56,47 @@ def formatar_moeda(valor) -> str:
 # ──────────────────────────────────────────────
 def buscar_pncp() -> list[dict]:
     editais = []
-    for uf in ESTADOS:
-        pagina = 1
-        while True:
-            try:
-                url = "https://pncp.gov.br/api/pncp/v1/contratacoes/publicacoes"
-                params = {
-                    "dataInicial": DATA_INICIAL,
-                    "dataFinal": DATA_FINAL,
+    vistos = set()
+    TERMOS_PNCP = [
+        "grafica",
+        "impressao grafica",
+        "servicos graficos",
+        "banner comunicacao visual",
+        "material grafico",
+    ]
+    for termo in TERMOS_PNCP:
+        try:
+            url = "https://pncp.gov.br/api/search"
+            params = {"q": termo, "tipos_documento": "edital", "pagina": 1, "tam_pagina": 20}
+            r = requests.get(url, params=params, timeout=30)
+            if r.status_code != 200:
+                continue
+            itens = r.json().get("items", [])
+            for item in itens:
+                uf = item.get("uf", "")
+                if uf not in ESTADOS:
+                    continue
+                data_pub = item.get("data_publicacao_pncp", item.get("createdAt", ""))[:10]
+                if data_pub < DATA_CORTE:
+                    continue
+                objeto = item.get("description", "") or item.get("title", "")
+                chave = item.get("id", objeto[:40])
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                item_url = item.get("item_url", "")
+                editais.append({
+                    "portal": "PNCP",
                     "uf": uf,
-                    "pagina": pagina,
-                    "tamanhoPagina": 50,
-                }
-                r = requests.get(url, params=params, timeout=20)
-                if r.status_code != 200:
-                    break
-                dados = r.json()
-                itens = dados.get("data", [])
-                if not itens:
-                    break
-                for item in itens:
-                    objeto = item.get("objetoCompra", "") or item.get("descricao", "")
-                    if contem_keyword(objeto):
-                        editais.append({
-                            "portal": "PNCP",
-                            "uf": uf,
-                            "orgao": item.get("orgaoEntidade", {}).get("razaoSocial", "—"),
-                            "objeto": objeto[:200],
-                            "valor": formatar_moeda(item.get("valorTotalEstimado")),
-                            "modalidade": item.get("modalidadeNome", "—"),
-                            "data": item.get("dataPublicacaoPncp", "")[:10] if item.get("dataPublicacaoPncp") else "—",
-                            "link": f"https://pncp.gov.br/app/editais/{item.get('orgaoEntidade', {}).get('cnpj', '')}/{item.get('anoCompra', '')}/{item.get('sequencialCompra', '')}",
-                        })
-                total_paginas = dados.get("totalPaginas", 1)
-                if pagina >= total_paginas:
-                    break
-                pagina += 1
-            except Exception as e:
-                print(f"[PNCP/{uf}] Erro página {pagina}: {e}")
-                break
+                    "orgao": item.get("orgao_nome", "—"),
+                    "objeto": objeto[:200],
+                    "valor": formatar_moeda(item.get("valor_global")),
+                    "modalidade": item.get("modalidade_licitacao_nome", "—"),
+                    "data": data_pub,
+                    "link": f"https://pncp.gov.br{item_url}" if item_url else "https://pncp.gov.br",
+                })
+        except Exception as e:
+            print(f"[PNCP/{termo}] Erro: {e}")
     print(f"[PNCP] {len(editais)} editais encontrados")
     return editais
 
