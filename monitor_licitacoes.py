@@ -3,6 +3,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
 # ──────────────────────────────────────────────
@@ -25,21 +26,53 @@ MODALIDADES = {
     9: "Inexigibilidade",
 }
 
-KEYWORDS = [
-    "gráfica", "grafica", "gráfico", "grafico", "gráficos", "graficos",
-    "impressão", "impressao", "impressos", "imprimir",
-    "banner", "faixa", "lona", "vinil", "adesivo",
-    "comunicação visual", "comunicacao visual",
-    "plotagem", "ploter", "plotter",
-    "folder", "panfleto", "cartaz",
-    "material gráfico", "material grafico",
+# Keywords específicas do segmento gráfica/comunicação visual
+# Divididas em PRIMÁRIAS (match direto) e COMPOSTAS (precisam de contexto)
+KEYWORDS_PRIMARIAS = [
+    # Serviços gráficos
+    "gráfica", "grafica",
     "serviço gráfico", "servico grafico",
-    "offset", "off-set", "serigrafia",
+    "serviços gráficos", "servicos graficos",
+    "produção gráfica", "producao grafica",
+    "material gráfico", "material grafico",
+    "impressão gráfica", "impressao grafica",
+    # Comunicação visual
+    "comunicação visual", "comunicacao visual",
+    # Técnicas específicas de impressão
+    "offset", "off-set",
+    "serigrafia",
     "sublimação", "sublimacao",
-    "brochura", "catálogo", "catalogo", "etiqueta",
-    "embalagem", "carimbo",
+    "plotagem", "ploter", "plotter",
+    # Produtos específicos
+    "banner", "banners",
+    "faixa", "faixas",
     "diagramação", "diagramacao",
 ]
+
+KEYWORDS_COMPOSTAS = [
+    # Termos que sozinhos são genéricos mas no contexto são válidos
+    "impressão", "impressao",
+    "panfleto", "panfletos",
+    "cartaz", "cartazes",
+    "folder", "folders",
+    "lona", "vinil", "adesivo",
+]
+
+def contem_keyword(texto: str) -> bool:
+    if not texto:
+        return False
+    t = texto.lower()
+    # Match direto nas primárias
+    if any(k in t for k in KEYWORDS_PRIMARIAS):
+        return True
+    # Para compostas, exige que apareça junto com termos gráficos
+    CONTEXTO = ["gráf", "graf", "impress", "visual", "print", "tipograf"]
+    if any(k in t for k in KEYWORDS_COMPOSTAS):
+        return any(c in t for c in CONTEXTO)
+    return False
+
+# Manter compatibilidade com chamadas antigas
+KEYWORDS = KEYWORDS_PRIMARIAS + KEYWORDS_COMPOSTAS
 
 HOJE   = datetime.now()
 ONTEM  = HOJE - timedelta(days=1)
@@ -52,13 +85,6 @@ DATA_F_DISPLAY = HOJE.strftime("%d/%m/%Y")
 # ──────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────
-def contem_keyword(texto: str) -> bool:
-    if not texto:
-        return False
-    t = texto.lower()
-    return any(k in t for k in KEYWORDS)
-
-
 def formatar_moeda(valor) -> str:
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -78,63 +104,72 @@ def safe_get(url, params=None, headers=None, timeout=25) -> dict | None:
 
 # ──────────────────────────────────────────────
 # 1. PNCP — API de Publicações (principal)
-#    Busca por UF + Data + Modalidade
+#    Busca paralela por UF + Data + Modalidade
 # ──────────────────────────────────────────────
+def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
+    """Busca uma combinação UF+modalidade no PNCP."""
+    resultados = []
+    url = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+    pagina = 1
+    while True:
+        params = {
+            "dataInicial": DATA_I,
+            "dataFinal":   DATA_F,
+            "uf":          uf,
+            "codigoModalidadeContratacao": cod_mod,
+            "pagina":      pagina,
+            "tamanhoPagina": 50,
+        }
+        dados = safe_get(url, params=params)
+        if not dados:
+            break
+        itens = dados.get("data", [])
+        if not itens:
+            break
+        for item in itens:
+            objeto = item.get("objetoCompra", "") or ""
+            if not contem_keyword(objeto):
+                continue
+            cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
+            ano  = item.get("anoCompra", "")
+            seq  = item.get("sequencialCompra", "")
+            resultados.append({
+                "portal":     "PNCP",
+                "uf":         uf,
+                "orgao":      item.get("orgaoEntidade", {}).get("razaoSocial", "—"),
+                "objeto":     objeto[:200],
+                "valor":      formatar_moeda(item.get("valorTotalEstimado")),
+                "modalidade": nome_mod,
+                "data":       (item.get("dataPublicacaoPncp") or "")[:10],
+                "link":       f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if cnpj else "https://pncp.gov.br/app/editais",
+                "_chave":     item.get("numeroControlePNCP", objeto[:40]),
+            })
+        total_pag = dados.get("totalPaginas", 1)
+        if pagina >= total_pag or pagina >= 3:
+            break
+        pagina += 1
+    return resultados
+
+
 def buscar_pncp_publicacoes() -> list[dict]:
     editais = []
     vistos  = set()
-    url     = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+    combinacoes = [(uf, cod, nome) for uf in ESTADOS for cod, nome in MODALIDADES.items()]
 
-    for uf in ESTADOS:
-        for cod_mod, nome_mod in MODALIDADES.items():
-            pagina = 1
-            while True:
-                params = {
-                    "dataInicial": DATA_I,
-                    "dataFinal":   DATA_F,
-                    "uf":          uf,
-                    "codigoModalidadeContratacao": cod_mod,
-                    "pagina":      pagina,
-                    "tamanhoPagina": 50,
-                }
-                dados = safe_get(url, params=params)
-                if not dados:
-                    break
-
-                itens = dados.get("data", [])
-                if not itens:
-                    break
-
-                for item in itens:
-                    objeto = item.get("objetoCompra", "") or ""
-                    if not contem_keyword(objeto):
-                        continue
-
-                    chave = item.get("numeroControlePNCP", objeto[:40])
-                    if chave in vistos:
-                        continue
-                    vistos.add(chave)
-
-                    cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
-                    ano  = item.get("anoCompra", "")
-                    seq  = item.get("sequencialCompra", "")
-                    link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if cnpj else "https://pncp.gov.br/app/editais"
-
-                    editais.append({
-                        "portal":     "PNCP",
-                        "uf":         uf,
-                        "orgao":      item.get("orgaoEntidade", {}).get("razaoSocial", "—"),
-                        "objeto":     objeto[:200],
-                        "valor":      formatar_moeda(item.get("valorTotalEstimado")),
-                        "modalidade": nome_mod,
-                        "data":       (item.get("dataPublicacaoPncp") or "")[:10],
-                        "link":       link,
-                    })
-
-                total_pag = dados.get("totalPaginas", 1)
-                if pagina >= total_pag or pagina >= 3:   # máx 3 págs por combinação
-                    break
-                pagina += 1
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(_buscar_pncp_combinacao, uf, cod, nome): (uf, cod)
+            for uf, cod, nome in combinacoes
+        }
+        for future in as_completed(futures):
+            try:
+                for item in future.result():
+                    chave = item.pop("_chave")
+                    if chave not in vistos:
+                        vistos.add(chave)
+                        editais.append(item)
+            except Exception as e:
+                print(f"  [PNCP thread] {e}")
 
     print(f"[PNCP Publicações] {len(editais)} editais encontrados")
     return editais
@@ -405,11 +440,8 @@ if __name__ == "__main__":
     print()
 
     todos = []
-    todos += buscar_pncp_publicacoes()
-    todos += buscar_pncp_texto()
-    todos += buscar_bll()
-    todos += buscar_licitanet()
-    todos += buscar_compras_publicas()
+    todos += buscar_pncp_publicacoes()   # API oficial por UF+data+modalidade
+    todos += buscar_pncp_texto()         # Busca por termos (complementar)
 
     # Deduplicar por orgao+objeto
     vistos = set()
