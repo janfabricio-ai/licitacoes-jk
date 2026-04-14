@@ -261,72 +261,129 @@ def buscar_pncp_texto() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 3. BLL Compras — busca por termos (sem login)
+# 3. BLL Compras — busca pública por estado + data, filtra por keyword
 # ──────────────────────────────────────────────
-def buscar_bll() -> list[dict]:
-    editais = []
-    TERMOS_BLL = ["grafica", "impressao grafica", "banner comunicacao visual", "material grafico"]
-
-    for termo in TERMOS_BLL:
+def _buscar_bll_bnc(portal: str, base_url: str, uf: str) -> list[dict]:
+    """Busca um estado no BLL ou BNC via endpoint público."""
+    resultados = []
+    offset = 0
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"{base_url}/Process/ProcessSearchPublic?param1=0",
+    }
+    while True:
         try:
             r = requests.post(
-                "https://bllcompras.com/Home/SearchEditalPublic",
-                json={"Palavras": termo, "Estados": ",".join(ESTADOS), "PageIndex": 1, "PageSize": 20},
-                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-                timeout=20,
+                f"{base_url}/Process/GetProcessByParams",
+                data={
+                    "Organization": "",
+                    "Number":       "",
+                    "City":         "",
+                    "fkState":      uf,
+                    "fkModality":   "",
+                    "fkStatus":     "2",   # Publicado
+                    "fkDisputeKind": "",
+                    "DateStart":    DATA_I_DISPLAY,
+                    "DateEnd":      DATA_F_DISPLAY,
+                    "DateStartDispute": "",
+                    "DateEndDispute":   "",
+                    "Offset":       offset,
+                    "token":        "",
+                },
+                headers=headers,
+                timeout=25,
             )
             if r.status_code != 200:
-                continue
-            itens = r.json().get("Editais", []) or []
+                print(f"  [{portal}/{uf}] HTTP {r.status_code}")
+                break
+            dados = r.json()
+            itens = dados if isinstance(dados, list) else dados.get("data", dados.get("Processos", dados.get("processes", [])))
+            if not itens:
+                break
             for item in itens:
-                objeto = item.get("Objeto", "") or ""
-                if not contem_keyword(objeto):
+                objeto = (
+                    item.get("Description") or item.get("Objeto") or
+                    item.get("objeto") or item.get("description") or ""
+                )
+                if not contem_keyword(objeto, uf):
                     continue
-                editais.append({
-                    "portal":     "BLL",
-                    "uf":         item.get("Estado", "—"),
-                    "orgao":      item.get("NomeOrgao", "—"),
+                url_edital = item.get("UrlProcess") or item.get("UrlEdital") or item.get("url") or ""
+                resultados.append({
+                    "portal":     portal,
+                    "uf":         uf,
+                    "orgao":      item.get("Organization") or item.get("NomeOrgao") or item.get("orgao") or "—",
                     "objeto":     objeto[:200],
-                    "valor":      formatar_moeda(item.get("ValorEstimado")),
-                    "modalidade": item.get("Modalidade", "—"),
-                    "data":       str(item.get("DataPublicacao", ""))[:10] or "—",
-                    "link":       f"https://bllcompras.com{item.get('UrlEdital', '')}",
+                    "valor":      formatar_moeda(item.get("EstimatedValue") or item.get("ValorEstimado") or item.get("valor")),
+                    "modalidade": item.get("Modality") or item.get("Modalidade") or item.get("modalidade") or "—",
+                    "data":       str(item.get("PublicationDate") or item.get("DataPublicacao") or "")[:10] or "—",
+                    "link":       f"{base_url}{url_edital}" if url_edital.startswith("/") else url_edital or base_url,
                 })
+            # Paginação: cada página tem 20 itens
+            if len(itens) < 20:
+                break
+            offset += 20
         except Exception as e:
-            print(f"  [BLL/{termo}] {e}")
+            print(f"  [{portal}/{uf}] {e}")
+            break
+    return resultados
 
+
+def buscar_bll() -> list[dict]:
+    editais = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futuros = {ex.submit(_buscar_bll_bnc, "BLL", "https://bllcompras.com", uf): uf for uf in ESTADOS}
+        for f in as_completed(futuros):
+            editais += f.result()
     print(f"[BLL] {len(editais)} editais encontrados")
     return editais
 
 
 # ──────────────────────────────────────────────
-# 4. Licitanet
+# 4. BNC Compras — mesma plataforma que BLL
+# ──────────────────────────────────────────────
+def buscar_bnc() -> list[dict]:
+    editais = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futuros = {ex.submit(_buscar_bll_bnc, "BNC", "https://bnccompras.com", uf): uf for uf in ESTADOS}
+        for f in as_completed(futuros):
+            editais += f.result()
+    print(f"[BNC] {len(editais)} editais encontrados")
+    return editais
+
+
+# ──────────────────────────────────────────────
+# 5. Licitanet
 # ──────────────────────────────────────────────
 def buscar_licitanet() -> list[dict]:
     editais = []
     try:
-        r = requests.post(
-            "https://www.licitanet.com.br/api/licitacao/busca",
-            json={"texto": "grafica impressao", "estados": ESTADOS, "pagina": 1, "itensPorPagina": 50},
-            headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"},
+        r = requests.get(
+            "https://www.licitanet.com.br/licitacoes",
+            params={"busca": "grafica impressao banner", "uf": ",".join(ESTADOS), "pagina": 1},
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
             timeout=20,
         )
         if r.status_code == 200:
-            dados = r.json()
-            itens = dados.get("licitacoes", dados.get("itens", dados.get("data", [])))
-            for item in itens:
-                objeto = item.get("objeto", item.get("descricao", "")) or ""
-                if contem_keyword(objeto):
-                    editais.append({
-                        "portal":     "Licitanet",
-                        "uf":         item.get("uf", item.get("estado", "—")),
-                        "orgao":      item.get("orgao", item.get("nomeOrgao", "—")),
-                        "objeto":     objeto[:200],
-                        "valor":      formatar_moeda(item.get("valor", item.get("valorEstimado"))),
-                        "modalidade": item.get("modalidade", "—"),
-                        "data":       str(item.get("dataPublicacao", ""))[:10] or "—",
-                        "link":       item.get("link", "https://www.licitanet.com.br"),
-                    })
+            try:
+                dados = r.json()
+                itens = dados.get("licitacoes", dados.get("itens", dados.get("data", [])))
+                for item in itens:
+                    objeto = item.get("objeto", item.get("descricao", "")) or ""
+                    if contem_keyword(objeto):
+                        editais.append({
+                            "portal":     "Licitanet",
+                            "uf":         item.get("uf", item.get("estado", "—")),
+                            "orgao":      item.get("orgao", item.get("nomeOrgao", "—")),
+                            "objeto":     objeto[:200],
+                            "valor":      formatar_moeda(item.get("valor", item.get("valorEstimado"))),
+                            "modalidade": item.get("modalidade", "—"),
+                            "data":       str(item.get("dataPublicacao", ""))[:10] or "—",
+                            "link":       item.get("link", "https://www.licitanet.com.br"),
+                        })
+            except Exception:
+                pass
     except Exception as e:
         print(f"  [Licitanet] {e}")
 
@@ -335,7 +392,7 @@ def buscar_licitanet() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 5. Portal de Compras Públicas
+# 6. Portal de Compras Públicas
 # ──────────────────────────────────────────────
 def buscar_compras_publicas() -> list[dict]:
     editais = []
@@ -429,7 +486,7 @@ def montar_html(editais: list[dict]) -> str:
     {corpo}
     <hr style="margin-top:30px;border:none;border-top:1px solid #eee;">
     <p style="font-size:11px;color:#999;margin:10px 0 0;">
-      Portais monitorados: PNCP (Publicações + Busca) · BLL Compras · Licitanet · Portal de Compras Públicas<br>
+      Portais monitorados: PNCP (Publicações + Busca) · BLL Compras · BNC Compras · Licitanet · Portal de Compras Públicas<br>
       Modalidades: Pregão Eletrônico · Pregão Presencial · Concorrência · Dispensa · Inexigibilidade<br>
       Enviado automaticamente todo dia às 7h pelo sistema JK Licitações via GitHub Actions.
     </p>
@@ -470,6 +527,10 @@ if __name__ == "__main__":
     todos = []
     todos += buscar_pncp_publicacoes()   # API oficial por UF+data+modalidade
     todos += buscar_pncp_texto()         # Busca por termos (complementar)
+    todos += buscar_bll()               # BLL Compras — busca pública por estado+data
+    todos += buscar_bnc()               # BNC Compras — mesma plataforma que BLL
+    todos += buscar_licitanet()         # Licitanet
+    todos += buscar_compras_publicas()  # Portal de Compras Públicas
 
     # Deduplicar por orgao+objeto
     vistos = set()
