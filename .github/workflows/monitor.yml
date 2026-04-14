@@ -1,0 +1,28 @@
+name: Monitoramento Diário de Licitações
+
+on:
+  schedule:
+    - cron: "0 10 * * *"   # 10h UTC = 7h Brasília
+  workflow_dispatch:        # permite rodar manualmente
+
+jobs:
+  monitorar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Executar monitoramento
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+        run: python monitor_licitacoes.py
