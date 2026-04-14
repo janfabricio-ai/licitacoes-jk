@@ -58,10 +58,19 @@ KEYWORDS_COMPOSTAS = [
     "lona", "vinil", "adesivo",
 ]
 
-def contem_keyword(texto: str) -> bool:
+# Keywords exclusivas por estado
+KEYWORDS_PR = [
+    "proerd",           # Programa Educacional de Resistência às Drogas (PR)
+    "cartilha proerd",
+]
+
+def contem_keyword(texto: str, uf: str = "") -> bool:
     if not texto:
         return False
     t = texto.lower()
+    # Keywords exclusivas do PR
+    if uf == "PR" and any(k in t for k in KEYWORDS_PR):
+        return True
     # Match direto nas primárias
     if any(k in t for k in KEYWORDS_PRIMARIAS):
         return True
@@ -128,7 +137,7 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
             break
         for item in itens:
             objeto = item.get("objetoCompra", "") or ""
-            if not contem_keyword(objeto):
+            if not contem_keyword(objeto, uf):
                 continue
             cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
             ano  = item.get("anoCompra", "")
@@ -207,7 +216,7 @@ def buscar_pncp_texto() -> list[dict]:
             if data_pub < DATA_CORTE:
                 continue
             objeto = item.get("description", "") or item.get("title", "")
-            if not contem_keyword(objeto):
+            if not contem_keyword(objeto, item.get("uf", "")):
                 continue
             chave = item.get("id", objeto[:40])
             if chave in vistos:
