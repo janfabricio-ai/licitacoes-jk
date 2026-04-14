@@ -88,6 +88,9 @@ def buscar_pncp() -> list[dict]:
                     continue
                 vistos.add(chave)
                 item_url = item.get("item_url", "")
+                # item_url vem como /compras/{cnpj}/{ano}/{seq}
+                # formato correto do site é /app/editais/{cnpj}/{ano}/{seq}
+                link = f"https://pncp.gov.br/app/editais{item_url.replace('/compras', '')}" if item_url else "https://pncp.gov.br/app/editais"
                 editais.append({
                     "portal": "PNCP",
                     "uf": uf,
@@ -96,7 +99,7 @@ def buscar_pncp() -> list[dict]:
                     "valor": formatar_moeda(item.get("valor_global")),
                     "modalidade": item.get("modalidade_licitacao_nome", "—"),
                     "data": data_pub,
-                    "link": f"https://pncp.gov.br{item_url}" if item_url else "https://pncp.gov.br",
+                    "link": link,
                 })
         except Exception as e:
             print(f"[PNCP/{termo}] Erro: {e}")
