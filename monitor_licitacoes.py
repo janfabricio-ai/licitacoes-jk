@@ -152,11 +152,11 @@ def contem_keyword(texto: str, uf: str = "") -> bool:
 # Manter compatibilidade com chamadas antigas
 KEYWORDS = KEYWORDS_PRIMARIAS + KEYWORDS_COMPOSTAS
 
-HOJE   = datetime.now()
-ONTEM  = HOJE - timedelta(days=1)
-DATA_I = ONTEM.strftime("%Y%m%d")
-DATA_F = HOJE.strftime("%Y%m%d")
-DATA_I_DISPLAY = ONTEM.strftime("%d/%m/%Y")
+HOJE       = datetime.now()
+DIAS_ATRAS = HOJE - timedelta(days=2)   # janela de 3 dias para não perder nada
+DATA_I     = DIAS_ATRAS.strftime("%Y%m%d")
+DATA_F     = HOJE.strftime("%Y%m%d")
+DATA_I_DISPLAY = DIAS_ATRAS.strftime("%d/%m/%Y")
 DATA_F_DISPLAY = HOJE.strftime("%d/%m/%Y")
 
 
@@ -223,7 +223,7 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
                 "_chave":     item.get("numeroControlePNCP", objeto[:40]),
             })
         total_pag = dados.get("totalPaginas", 1)
-        if pagina >= total_pag or pagina >= 3:
+        if pagina >= total_pag or pagina >= 5:
             break
         pagina += 1
     return resultados
@@ -264,16 +264,20 @@ def buscar_pncp_texto() -> list[dict]:
 
     TERMOS = [
         # Pilar 1 — Material gráfico
-        "grafica impressao material grafico",
+        "grafica material grafico",
         "servicos graficos impressos",
-        "plotagem folder panfleto flyer",
+        "plotagem folder panfleto",
+        "impressao grafica offset",
         # Pilar 2 — Comunicação visual
-        "comunicacao visual banner adesivo",
-        "lona banner faixa impressao",
-        "placa sinalizacao letreiro totem",
-        "acm fachada comunicacao visual",
+        "comunicacao visual banner",
+        "adesivo vinil plotagem",
+        "lona impressa banner faixa",
+        "placa sinalizacao comunicacao visual",
+        "letreiro totem luminoso backlight",
+        "acm aluminio composto fachada",
+        "sinalização visual interna externa",
         # Pilar 3 — PROERD (PR)
-        "proerd material grafico",
+        "proerd cartilha material",
     ]
 
     for termo in TERMOS:
@@ -317,14 +321,53 @@ def buscar_pncp_texto() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 3. BLL Compras — busca pública por estado + data, filtra por keyword
+# 3. BLL Compras — busca autenticada (plano pago)
 # ──────────────────────────────────────────────
-def _buscar_bll_bnc(portal: str, base_url: str, uf: str) -> list[dict]:
-    """Busca um estado no BLL ou BNC via endpoint público."""
+BLL_USER = os.environ.get("BLL_USER", "licitacao.graficajfacardoso@gmail.com")
+BLL_PASS = os.environ.get("BLL_PASS", "")   # definir secret BLL_PASS no GitHub
+BLL_ATIVO = bool(BLL_PASS)                  # só roda se a senha estiver configurada
+
+def _criar_sessao_bll(base_url: str) -> requests.Session | None:
+    """Faz login no BLL/BNC e retorna sessão autenticada."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    })
+    try:
+        # 1. Pega a página de login para capturar cookies de sessão
+        login_page = session.get(f"{base_url}/Home/Login", timeout=20)
+        if login_page.status_code != 200:
+            print(f"  [BLL Login] Erro ao carregar página: HTTP {login_page.status_code}")
+            return None
+
+        # 2. POST do login
+        resp = session.post(
+            f"{base_url}/Home/Login",
+            data={"Email": BLL_USER, "Password": BLL_PASS},
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Referer": f"{base_url}/Home/Login"},
+            allow_redirects=True,
+            timeout=20,
+        )
+        # Autenticação bem-sucedida se não redireciona para Login novamente
+        if "Login" in resp.url or resp.status_code != 200:
+            print(f"  [BLL Login] Falha na autenticação — verifique credenciais/plano")
+            return None
+
+        print(f"  [BLL Login] Autenticado em {base_url}")
+        return session
+    except Exception as e:
+        print(f"  [BLL Login] {e}")
+        return None
+
+
+def _buscar_bll_bnc(portal: str, base_url: str, uf: str, session: requests.Session = None) -> list[dict]:
+    """Busca um estado no BLL ou BNC via sessão autenticada."""
     resultados = []
+    if session is None:
+        return resultados   # sem sessão ativa, pula
     offset = 0
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Content-Type": "application/x-www-form-urlencoded",
         "X-Requested-With": "XMLHttpRequest",
         "Referer": f"{base_url}/Process/ProcessSearchPublic?param1=0",
@@ -388,8 +431,14 @@ def _buscar_bll_bnc(portal: str, base_url: str, uf: str) -> list[dict]:
 
 def buscar_bll() -> list[dict]:
     editais = []
+    if not BLL_ATIVO:
+        print("[BLL] Pulado — secret BLL_PASS não configurado (plano pago necessário)")
+        return editais
+    sessao = _criar_sessao_bll("https://bllcompras.com")
+    if not sessao:
+        return editais
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futuros = {ex.submit(_buscar_bll_bnc, "BLL", "https://bllcompras.com", uf): uf for uf in ESTADOS}
+        futuros = {ex.submit(_buscar_bll_bnc, "BLL", "https://bllcompras.com", uf, sessao): uf for uf in ESTADOS}
         for f in as_completed(futuros):
             editais += f.result()
     print(f"[BLL] {len(editais)} editais encontrados")
@@ -401,8 +450,14 @@ def buscar_bll() -> list[dict]:
 # ──────────────────────────────────────────────
 def buscar_bnc() -> list[dict]:
     editais = []
+    if not BLL_ATIVO:
+        print("[BNC] Pulado — secret BLL_PASS não configurado (plano pago necessário)")
+        return editais
+    sessao = _criar_sessao_bll("https://bnccompras.com")
+    if not sessao:
+        return editais
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futuros = {ex.submit(_buscar_bll_bnc, "BNC", "https://bnccompras.com", uf): uf for uf in ESTADOS}
+        futuros = {ex.submit(_buscar_bll_bnc, "BNC", "https://bnccompras.com", uf, sessao): uf for uf in ESTADOS}
         for f in as_completed(futuros):
             editais += f.result()
     print(f"[BNC] {len(editais)} editais encontrados")
