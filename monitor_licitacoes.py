@@ -26,56 +26,106 @@ MODALIDADES = {
     9: "Inexigibilidade",
 }
 
-# Keywords específicas do segmento gráfica/comunicação visual
-# Divididas em PRIMÁRIAS (match direto) e COMPOSTAS (precisam de contexto)
+# ──────────────────────────────────────────────────────────────────────────────
+# KEYWORDS — 3 pilares do negócio JK Artes Gráficas
+#
+#  PILAR 1 — Material Gráfico (impressos em geral)
+#  PILAR 2 — Comunicação Visual (banner, adesivo, lona, placa, ACM, fachada…)
+#  PILAR 3 — PROERD (exclusivo Paraná)
+# ──────────────────────────────────────────────────────────────────────────────
+
 KEYWORDS_PRIMARIAS = [
-    # Serviços gráficos
+    # ── PILAR 1: Material Gráfico ─────────────────────────────────────────
     "gráfica", "grafica",
     "serviço gráfico", "servico grafico",
     "serviços gráficos", "servicos graficos",
     "produção gráfica", "producao grafica",
     "material gráfico", "material grafico",
     "impressão gráfica", "impressao grafica",
-    # Comunicação visual
-    "comunicação visual", "comunicacao visual",
-    # Técnicas específicas de impressão
     "offset", "off-set",
-    "serigrafia",
-    "sublimação", "sublimacao",
     "plotagem", "ploter", "plotter",
-    # Produtos específicos
+    "folder", "folders",
+    "panfleto", "panfletos",
+    "flyer", "flyers",
+    "encadernação", "encadernacao",
+    "plastificação", "plastificacao",
+    "catálogo impresso", "catalogo impresso",
+    "calendário impresso", "calendario impresso",
+    "crachá", "cracha", "crachás", "crachas",
+
+    # ── PILAR 2: Comunicação Visual ───────────────────────────────────────
+    "comunicação visual", "comunicacao visual",
     "banner", "banners",
     "faixa", "faixas",
-    "diagramação", "diagramacao",
+    "lona impressa", "lona para banner", "lona de licitação", "impressão em lona",
+    "impressao em lona",
+    "adesivo", "adesivos",
+    "vinil adesivo", "plotagem vinil",
+    "placa de sinalização", "placa sinalizacao",
+    "placa sinalizadora", "placa sinalética",
+    "sinalização visual", "sinalizacao visual",
+    "sinalização interna", "sinalizacao interna",
+    "sinalização externa", "sinalizacao externa",
+    "letreiro", "letreiros",
+    "totem", "totens",
+    "backlight", "back-light",
+    "luminoso", "luminosos",
+    "acm", "painel acm", "chapa acm",
+    "alumínio composto", "aluminio composto",
+    "fachada comercial", "fachada de loja",
+    "letras caixa", "letra caixa",
+    "letras em acm", "letras em alumínio",
 ]
 
 KEYWORDS_COMPOSTAS = [
-    # Termos que sozinhos são genéricos mas no contexto são válidos
+    # Termos genéricos — só válidos quando acompanhados de contexto gráfico/visual
     "impressão", "impressao",
-    "panfleto", "panfletos",
+    "lona",
+    "vinil",
     "cartaz", "cartazes",
-    "folder", "folders",
-    "lona", "vinil", "adesivo",
+    "sinalização", "sinalizacao",
+    "fachada",
+    "painel", "painéis", "paineis",
 ]
 
 # Keywords exclusivas por estado
 KEYWORDS_PR = [
     "proerd",
     "cartilha proerd",
+    "material proerd",
+    "kit proerd",
 ]
 
 # Termos que ELIMINAM o edital — fora do segmento
 KEYWORDS_EXCLUSAO = [
+    # Obras / engenharia civil
     "pavimentação", "pavimentacao", "pavimento",
     "recape", "recapeamento", "asfalto", "asfáltico", "asfaltico",
     "obras de engenharia", "obra de engenharia",
-    "construção", "construcao", "reforma predial",
+    "construção civil", "construcao civil",
+    "reforma predial", "reforma de edificação",
     "drenagem", "esgoto", "saneamento",
     "terraplanagem", "aterro",
-    "ponte", "viaduto", "galeria",
-    "elétrica", "eletrica", "instalação elétrica",
-    "hidráulica", "hidraulica",
-    "lona de freio", "lona de caminhão",
+    "ponte", "viaduto", "galeria de concreto",
+    "instalação elétrica", "instalacao eletrica",
+    "instalação hidráulica", "instalacao hidraulica",
+    # Fachada de obra (não comunicação visual)
+    "reforma de fachada", "revitalização de fachada",
+    "fachada predial", "fachada de edificação",
+    "fachada ventilada",
+    # Lona industrial / transporte
+    "lona de freio", "lona de caminhão", "lona caminhao",
+    "lona agrícola", "lona agricola",
+    "lona de cobertura",
+    # ACM / alumínio na construção civil
+    "esquadria de alumínio", "esquadria aluminio",
+    "cobertura em alumínio",
+    # Outros fora do segmento
+    "uniforme", "uniforme escolar",
+    "vestuário", "vestuario",
+    "têxtil", "textil",
+    "bordado",
+    "sublimação em tecido", "sublimacao em tecido",
 ]
 
 def contem_keyword(texto: str, uf: str = "") -> bool:
@@ -213,11 +263,17 @@ def buscar_pncp_texto() -> list[dict]:
     DATA_CORTE = (HOJE - timedelta(days=30)).strftime("%Y-%m-%d")
 
     TERMOS = [
-        "grafica impressao",
-        "servicos graficos",
-        "banner comunicacao visual",
-        "material grafico impressos",
-        "plotagem vinil adesivo",
+        # Pilar 1 — Material gráfico
+        "grafica impressao material grafico",
+        "servicos graficos impressos",
+        "plotagem folder panfleto flyer",
+        # Pilar 2 — Comunicação visual
+        "comunicacao visual banner adesivo",
+        "lona banner faixa impressao",
+        "placa sinalizacao letreiro totem",
+        "acm fachada comunicacao visual",
+        # Pilar 3 — PROERD (PR)
+        "proerd material grafico",
     ]
 
     for termo in TERMOS:
@@ -361,7 +417,7 @@ def buscar_licitanet() -> list[dict]:
     try:
         r = requests.get(
             "https://www.licitanet.com.br/licitacoes",
-            params={"busca": "grafica impressao banner", "uf": ",".join(ESTADOS), "pagina": 1},
+            params={"busca": "grafica comunicacao visual banner adesivo lona placa sinalizacao acm", "uf": ",".join(ESTADOS), "pagina": 1},
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
             timeout=20,
         )
@@ -399,7 +455,7 @@ def buscar_compras_publicas() -> list[dict]:
     try:
         r = requests.get(
             "https://www.portaldecompraspublicas.com.br/18/processos/",
-            params={"busca": "grafica impressao banner", "estados": ",".join(ESTADOS)},
+            params={"busca": "grafica comunicacao visual banner adesivo lona placa sinalizacao acm", "estados": ",".join(ESTADOS)},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=20,
         )
