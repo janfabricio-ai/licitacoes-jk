@@ -12,6 +12,7 @@ import os
 GMAIL_USER         = os.environ.get("GMAIL_USER", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 EMAIL_DESTINO      = "licitacao.jkartesgraficas@gmail.com"
+EMAIL_COPIA        = "janfabricio@gmail.com"
 EMAIL_FROM_NAME    = "JK Licitações"
 
 ESTADOS = ["PR", "SP", "SC", "RS"]
@@ -616,13 +617,14 @@ def enviar_email(html: str, total: int):
     msg["Subject"] = assunto
     msg["From"]    = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
     msg["To"]      = EMAIL_DESTINO
+    msg["Cc"]      = EMAIL_COPIA
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
         server.starttls()
         server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_USER, EMAIL_DESTINO, msg.as_string())
+        server.sendmail(GMAIL_USER, [EMAIL_DESTINO, EMAIL_COPIA], msg.as_string())
     print(f"[EMAIL] Enviado: {assunto}")
 
 
