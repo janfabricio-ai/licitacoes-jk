@@ -399,6 +399,12 @@ def _buscar_bll_bnc(portal: str, base_url: str, uf: str, session: requests.Sessi
                 print(f"  [{portal}/{uf}] HTTP {r.status_code}")
                 break
             dados = r.json()
+            if isinstance(dados, dict) and dados.get("modal") == "error":
+                import re
+                msg = re.sub(r"<[^>]+>", " ", dados.get("html", ""))
+                msg = re.sub(r"\s+", " ", msg).strip()[:120]
+                print(f"  [{portal}/{uf}] ⚠️ Erro do portal: {msg}")
+                break
             itens = dados if isinstance(dados, list) else dados.get("data", dados.get("Processos", dados.get("processes", [])))
             if not itens:
                 break
