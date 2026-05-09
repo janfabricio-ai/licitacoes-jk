@@ -17,14 +17,15 @@ EMAIL_FROM_NAME    = "JK Licitações"
 
 ESTADOS = ["PR", "SP", "SC", "RS"]
 
-# Modalidades PNCP relevantes
+# Modalidades PNCP relevantes (códigos da Lei 14.133/2021)
 MODALIDADES = {
-    4: "Concorrência Eletrônica",
-    5: "Concorrência Presencial",
-    6: "Pregão Eletrônico",
-    7: "Pregão Presencial",
-    8: "Dispensa",
-    9: "Inexigibilidade",
+    4:  "Concorrência Eletrônica",
+    5:  "Concorrência Presencial",
+    6:  "Pregão Eletrônico",
+    7:  "Pregão Presencial",
+    8:  "Dispensa",
+    9:  "Inexigibilidade",
+    12: "Credenciamento",
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -154,7 +155,7 @@ def contem_keyword(texto: str, uf: str = "") -> bool:
 KEYWORDS = KEYWORDS_PRIMARIAS + KEYWORDS_COMPOSTAS
 
 HOJE       = datetime.now()
-DIAS_ATRAS = HOJE - timedelta(days=2)   # janela de 3 dias para não perder nada
+DIAS_ATRAS = HOJE - timedelta(days=4)   # janela de 5 dias para não perder editais de fim de semana
 DATA_I     = DIAS_ATRAS.strftime("%Y%m%d")
 DATA_F     = HOJE.strftime("%Y%m%d")
 DATA_I_DISPLAY = DIAS_ATRAS.strftime("%d/%m/%Y")
@@ -171,13 +172,22 @@ def formatar_moeda(valor) -> str:
         return "—"
 
 
-def safe_get(url, params=None, headers=None, timeout=25) -> dict | None:
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        print(f"  [ERRO] {url}: {e}")
+def safe_get(url, params=None, headers=None, timeout=45) -> dict | None:
+    import time
+    for tentativa in (1, 2):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 204:
+                return None  # No Content — combinação sem editais, comportamento normal
+            print(f"  [ERRO] {url}: HTTP {r.status_code}")
+            return None
+        except Exception as e:
+            if tentativa == 1:
+                time.sleep(2)
+                continue
+            print(f"  [ERRO] {url}: {e}")
     return None
 
 
@@ -235,7 +245,7 @@ def buscar_pncp_publicacoes() -> list[dict]:
     vistos  = set()
     combinacoes = [(uf, cod, nome) for uf in ESTADOS for cod, nome in MODALIDADES.items()]
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
             executor.submit(_buscar_pncp_combinacao, uf, cod, nome): (uf, cod)
             for uf, cod, nome in combinacoes
