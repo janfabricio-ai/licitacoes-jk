@@ -840,8 +840,8 @@ def montar_html(editais: list[dict]) -> str:
   <div style="background:#1a73e8;color:#fff;padding:20px 25px;border-radius:8px 8px 0 0;">
     <h2 style="margin:0;font-size:20px;">JK Artes Gráficas — Monitoramento de Licitações</h2>
     <p style="margin:6px 0 0;font-size:13px;opacity:.9;">
-      {DATA_I_DISPLAY} a {DATA_F_DISPLAY} &nbsp;|&nbsp;
-      <strong>{total} edital(is) encontrado(s)</strong> &nbsp;|&nbsp;
+      Publicações de {DATA_I_DISPLAY} a {DATA_F_DISPLAY} &nbsp;|&nbsp;
+      <strong>{total} edital(is) com abertura ≥ hoje</strong> &nbsp;|&nbsp;
       Estados: PR · SP · SC · RS
     </p>
   </div>
@@ -863,7 +863,7 @@ def montar_html(editais: list[dict]) -> str:
 # ENVIAR E-MAIL VIA GMAIL SMTP
 # ──────────────────────────────────────────────
 def enviar_email(html: str, total: int):
-    assunto = f"Licitações JK — {total} edital(is) | {DATA_I_DISPLAY} a {DATA_F_DISPLAY}"
+    assunto = f"Licitações JK — {total} edital(is) vigentes | publicações {DATA_I_DISPLAY}-{DATA_F_DISPLAY}"
     msg = MIMEMultipart("alternative")
     msg["Subject"] = assunto
     msg["From"]    = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
