@@ -595,7 +595,129 @@ def buscar_bnc() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 5. Licitanet
+# 5. DIOE-PR (Diário Oficial Executivo do Paraná)
+#    Cobre Copel, Sanepar, Compagás, Cohapar, gov PR, prefeituras PR.
+#    Busca exige CAPTCHA visual — resolvido via 2captcha (modo image).
+# ──────────────────────────────────────────────
+DIOE_BASE = "https://www.documentos.dioe.pr.gov.br/dioe"
+
+# DIOE-PR exige termos SEM acento (testado 10/05 — "gráfica" retorna 0, "grafica" retorna 16).
+# Diário com mais volume pra material gráfico/comunicação visual: ComInd (cod 2).
+DIOE_KEYWORDS = [
+    "grafica",
+    "impressao",
+    "sinalizacao",
+    "comunicacao visual",
+    "totem",
+    "adesivo",
+    "fachada",
+    "vinil",
+]
+
+DIOE_DIARIO_CODIGO = 2  # Comércio, Indústria e Serviços — onde gráfica/CV aparecem
+DIOE_DIARIO_NOME   = "Com/Ind/Serv"
+
+
+def _resolver_captcha_image(b64: str) -> str | None:
+    """Resolve CAPTCHA visual (imagem) via 2captcha. Retorna texto ou None."""
+    if not CAPTCHA_API_KEY:
+        return None
+    try:
+        from twocaptcha import TwoCaptcha
+        solver = TwoCaptcha(CAPTCHA_API_KEY)
+        result = solver.normal(b64)
+        return result.get("code")
+    except Exception as e:
+        print(f"  [2captcha image] Falha: {e}")
+        return None
+
+
+def _buscar_dioe_termo(termo: str) -> list[dict]:
+    """Busca 1 termo no DIOE-PR Executivo. Retorna matches deduplicados."""
+    import base64, re, html as html_lib
+    resultados = []
+    s = requests.Session()
+    s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    try:
+        # 1. Sessão (cookies)
+        s.get(f"{DIOE_BASE}/consultaPublicaPDF.do?action=pgLocalizar", timeout=30)
+        # 2. Imagem do captcha
+        r_img = s.get(f"{DIOE_BASE}/consultaPublicaPDF.do?action=imagemVerificacao", timeout=30)
+        if r_img.status_code != 200 or len(r_img.content) < 100:
+            return resultados
+        captcha_texto = _resolver_captcha_image(base64.b64encode(r_img.content).decode())
+        if not captcha_texto:
+            return resultados
+        # 3. Busca (janela 15 dias retroativos — editais publicados ainda em prazo)
+        data_ini = (HOJE - timedelta(days=15)).strftime("%d/%m/%Y")
+        data_fim = HOJE.strftime("%d/%m/%Y")
+        r = s.get(f"{DIOE_BASE}/consultaPublicaPDF.do", params={
+            "action":               "pgLocalizar",
+            "enviado":              "true",
+            "search":               termo,
+            "dataInicialEntrada":   data_ini,
+            "dataFinalEntrada":     data_fim,
+            "diarioCodigo":         DIOE_DIARIO_CODIGO,
+            "imagemVerificacao":    captcha_texto,
+        }, timeout=30)
+        if r.status_code != 200:
+            return resultados
+        # Verifica se captcha foi rejeitado ou sem resultados
+        if "Para continuar" in r.text and "informação da imagem" in r.text:
+            print(f"  [DIOE/{termo}] CAPTCHA rejeitado")
+            return resultados
+        if "Não encontramos" in r.text or "N&atilde;o encontramos" in r.text:
+            return resultados
+        # 4. Parse — cada bloco começa em destaqueImg(...)
+        blocos = re.split(r"destaqueImg\(", r.text)[1:]
+        for bloco in blocos[:50]:  # limite de segurança
+            m_id   = re.search(r"'([A-Za-z0-9_]+)_(\d+)'", bloco)
+            m_edi  = re.search(r"N.{1,3} da Edi.{1,3}o:</td>\s*<td[^>]*>(\d+)", bloco)
+            m_dat  = re.search(r"Data da Publica.{1,3}o:</td>\s*<td[^>]*>(\d{2}/\d{2}/\d{4})", bloco)
+            m_rel  = re.search(r"Grau de relev.{1,3}ncia:</td>\s*<td[^>]*>([\d,.]+)%", bloco)
+            if not (m_id and m_dat):
+                continue
+            id_pag = m_id.group(1); num_pag = m_id.group(2)
+            link_pag = f"{DIOE_BASE}/consultaPublicaPDF.do?action=imgPaginaPNG&paginaCodigo={num_pag}&id={id_pag}"
+            resultados.append({
+                "portal":     "DIOE-PR",
+                "uf":         "PR",
+                "orgao":      f"Diário {DIOE_DIARIO_NOME}",
+                "objeto":     f'"{termo}" — Edição {m_edi.group(1) if m_edi else "?"}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
+                "valor":      "—",
+                "modalidade": "—",
+                "data":       m_dat.group(1),
+                "link":       link_pag,
+            })
+    except Exception as e:
+        print(f"  [DIOE/{termo}] erro: {e}")
+    return resultados
+
+
+def buscar_dioe_pr() -> list[dict]:
+    editais = []
+    if not CAPTCHA_API_KEY:
+        print("[DIOE-PR] Pulado — CAPTCHA_API_KEY não configurado")
+        return editais
+    # Busca paralela por termo (3 workers — DIOE-PR é lento mas não bloqueia)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for matches in ex.map(_buscar_dioe_termo, DIOE_KEYWORDS):
+            editais += matches
+    # Dedup por (data, id_pagina) — mesmo edital pode aparecer em vários termos
+    vistos = set()
+    unicos = []
+    for e in editais:
+        chave = (e["data"], e["link"])
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        unicos.append(e)
+    print(f"[DIOE-PR] {len(unicos)} matches únicos encontrados ({len(editais)} brutos)")
+    return unicos
+
+
+# ──────────────────────────────────────────────
+# 6. Licitanet
 # ──────────────────────────────────────────────
 def buscar_licitanet() -> list[dict]:
     editais = []
@@ -771,6 +893,7 @@ if __name__ == "__main__":
     todos += buscar_pncp_texto()         # Busca por termos (complementar)
     todos += buscar_bll()               # BLL Compras — busca pública por estado+data
     todos += buscar_bnc()               # BNC Compras — mesma plataforma que BLL
+    todos += buscar_dioe_pr()           # DIOE-PR (Copel, Sanepar, gov PR) via captcha visual
     todos += buscar_licitanet()         # Licitanet
     todos += buscar_compras_publicas()  # Portal de Compras Públicas
 
