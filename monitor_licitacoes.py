@@ -155,6 +155,7 @@ def contem_keyword(texto: str, uf: str = "") -> bool:
 KEYWORDS = KEYWORDS_PRIMARIAS + KEYWORDS_COMPOSTAS
 
 HOJE       = datetime.now()
+HOJE_DATE  = HOJE.date()
 DIAS_ATRAS = HOJE - timedelta(days=4)   # janela de 5 dias para não perder editais de fim de semana
 DATA_I     = DIAS_ATRAS.strftime("%Y%m%d")
 DATA_F     = HOJE.strftime("%Y%m%d")
@@ -165,6 +166,23 @@ DATA_F_DISPLAY = HOJE.strftime("%d/%m/%Y")
 # ──────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────
+def edital_vigente(data_abertura: str) -> bool:
+    """True se data de abertura/disputa >= hoje. Aceita campo vazio (mantém)."""
+    if not data_abertura:
+        return True
+    s = data_abertura.strip()[:10]
+    try:
+        if "/" in s:
+            d, m, y = s.split("/")
+            dt = datetime(int(y), int(m), int(d)).date()
+        else:
+            y, mo, d = s.split("-")
+            dt = datetime(int(y), int(mo), int(d)).date()
+        return dt >= HOJE_DATE
+    except Exception:
+        return True
+
+
 def formatar_moeda(valor) -> str:
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -219,6 +237,9 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
             objeto = item.get("objetoCompra", "") or ""
             if not contem_keyword(objeto, uf):
                 continue
+            data_abertura = (item.get("dataAberturaProposta") or item.get("dataEncerramentoProposta") or "")[:10]
+            if not edital_vigente(data_abertura):
+                continue
             cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
             ano  = item.get("anoCompra", "")
             seq  = item.get("sequencialCompra", "")
@@ -229,7 +250,7 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
                 "objeto":     objeto[:200],
                 "valor":      formatar_moeda(item.get("valorTotalEstimado")),
                 "modalidade": nome_mod,
-                "data":       (item.get("dataPublicacaoPncp") or "")[:10],
+                "data":       data_abertura or (item.get("dataPublicacaoPncp") or "")[:10],
                 "link":       f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if cnpj else "https://pncp.gov.br/app/editais",
                 "_chave":     item.get("numeroControlePNCP", objeto[:40]),
             })
@@ -305,6 +326,9 @@ def buscar_pncp_texto() -> list[dict]:
             data_pub = (item.get("data_publicacao_pncp") or item.get("createdAt") or "")[:10]
             if data_pub < DATA_CORTE:
                 continue
+            data_abertura = (item.get("data_abertura_proposta") or item.get("data_encerramento_proposta") or "")[:10]
+            if not edital_vigente(data_abertura):
+                continue
             objeto = item.get("description", "") or item.get("title", "")
             if not contem_keyword(objeto, item.get("uf", "")):
                 continue
@@ -323,7 +347,7 @@ def buscar_pncp_texto() -> list[dict]:
                 "objeto":     objeto[:200],
                 "valor":      formatar_moeda(item.get("valor_global")),
                 "modalidade": item.get("modalidade_licitacao_nome", "—"),
-                "data":       data_pub,
+                "data":       data_abertura or data_pub,
                 "link":       link,
             })
 
@@ -332,11 +356,46 @@ def buscar_pncp_texto() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# 3. BLL Compras — busca autenticada (plano pago)
+# 3. BLL Compras — busca autenticada (plano pago + reCAPTCHA v3 via 2captcha)
 # ──────────────────────────────────────────────
-BLL_USER = os.environ.get("BLL_USER", "licitacao.graficajfacardoso@gmail.com")
-BLL_PASS = os.environ.get("BLL_PASS", "")   # definir secret BLL_PASS no GitHub
-BLL_ATIVO = bool(BLL_PASS)                  # só roda se a senha estiver configurada
+BLL_USER         = os.environ.get("BLL_USER", "licitacao.graficajfacardoso@gmail.com")
+BLL_PASS         = os.environ.get("BLL_PASS", "")
+CAPTCHA_API_KEY  = os.environ.get("CAPTCHA_API_KEY", "")
+BLL_ATIVO        = bool(BLL_PASS) and bool(CAPTCHA_API_KEY)
+
+# Códigos numéricos do BLL para fkState (descobertos via DevTools 09/05)
+BLL_FKSTATE = {"PR": 15, "SP": 24, "SC": 23, "RS": 20}
+
+# Site keys do reCAPTCHA v3 — cada portal usa uma chave própria
+BLL_RECAPTCHA_SITEKEYS = {
+    "https://bllcompras.com": "6LdpKvsmAAAAAA4rzH5iQNswgItyulQ1J2HQ1FkK",
+    "https://bnccompras.com": "6LestvomAAAAAG9MNzlBaMEufF1QLdpKoL48qGsq",
+}
+
+
+def _resolver_recaptcha_v3(base_url: str) -> str | None:
+    """Resolve reCAPTCHA v3 invisível via 2captcha. Retorna token ou None."""
+    if not CAPTCHA_API_KEY:
+        return None
+    sitekey = BLL_RECAPTCHA_SITEKEYS.get(base_url)
+    if not sitekey:
+        print(f"  [2captcha] Sitekey desconhecida para {base_url}")
+        return None
+    try:
+        from twocaptcha import TwoCaptcha
+        solver = TwoCaptcha(CAPTCHA_API_KEY)
+        result = solver.recaptcha(
+            sitekey=sitekey,
+            url=f"{base_url}/Participant",
+            version="v3",
+            action="submit",
+            score=0.3,
+        )
+        return result.get("code")
+    except Exception as e:
+        print(f"  [2captcha] Falha ao resolver: {e}")
+        return None
+
 
 def _criar_sessao_bll(base_url: str) -> requests.Session | None:
     """Faz login no BLL/BNC e retorna sessão autenticada."""
@@ -373,83 +432,134 @@ def _criar_sessao_bll(base_url: str) -> requests.Session | None:
 
 
 def _buscar_bll_bnc(portal: str, base_url: str, uf: str, session: requests.Session = None) -> list[dict]:
-    """Busca um estado no BLL ou BNC via sessão autenticada."""
+    """Busca um estado no BLL/BNC. Fluxo:
+       1. Listagem autenticada (1 reCAPTCHA v3) → HTML com ~100 <tr>, sem o objeto/descrição
+       2. Pra cada <tr>, GET em /Process/ProcessView (sem captcha) → extrai objeto
+       3. Filtra por keyword no objeto
+    """
+    import re, html as html_lib
     resultados = []
     if session is None:
-        return resultados   # sem sessão ativa, pula
-    offset = 0
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{base_url}/Process/ProcessSearchPublic?param1=0",
-    }
-    while True:
+        return resultados
+    fkstate_cod = BLL_FKSTATE.get(uf)
+    if fkstate_cod is None:
+        print(f"  [{portal}/{uf}] UF sem código BLL mapeado, pulando")
+        return resultados
+
+    # 1. Listagem (1 captcha)
+    token = _resolver_recaptcha_v3(base_url)
+    if not token:
+        print(f"  [{portal}/{uf}] Sem token reCAPTCHA, abortando")
+        return resultados
+    try:
+        r = session.post(
+            f"{base_url}/Participant/GetProcessByParams",
+            data={
+                "Organization":     "",
+                "Number":           "",
+                "City":             "",
+                "fkState":          fkstate_cod,
+                "fkModality":       "",
+                "fkStatus":         "",
+                "fkDisputeKind":    "",
+                "DateStart":        DATA_I_DISPLAY,
+                "DateEnd":          DATA_F_DISPLAY,
+                "DateStartDispute": "",
+                "DateEndDispute":   "",
+                "Offset":           0,
+                "token":            token,
+            },
+            headers={
+                "Content-Type":     "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer":          f"{base_url}/Participant",
+            },
+            timeout=45,
+        )
+        if r.status_code != 200:
+            print(f"  [{portal}/{uf}] HTTP {r.status_code} na listagem")
+            return resultados
+        dados = r.json()
+        if dados.get("modal") == "error":
+            msg = re.sub(r"<[^>]+>", " ", dados.get("html", ""))
+            msg = re.sub(r"\s+", " ", msg).strip()[:120]
+            print(f"  [{portal}/{uf}] ⚠️ Erro do portal: {msg}")
+            return resultados
+        html_listagem = dados.get("html", "")
+    except Exception as e:
+        print(f"  [{portal}/{uf}] Erro listagem: {e}")
+        return resultados
+
+    # 2. Parse HTML — extrai metadados + link de ProcessView de cada <tr>
+    def _clean(s: str) -> str:
+        s = re.sub(r"<[^>]+>", " ", s)
+        s = html_lib.unescape(s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    candidatos = []
+    for tr_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html_listagem, re.DOTALL):
+        m_href = re.search(r'href="(/Process/ProcessView\?param1=[^"]+)"', tr_html)
+        if not m_href:
+            continue
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", tr_html, re.DOTALL)
+        if len(tds) < 8:
+            continue
+        # tds[7] = data da disputa "DD/MM/YYYY HH:MM" — usar pra filtrar editais vencidos
+        data_disp = _clean(tds[7])[:10] if len(tds) > 7 else ""
+        if not edital_vigente(data_disp):
+            continue
+        candidatos.append({
+            "link_view":  base_url + m_href.group(1).replace("&amp;", "&"),
+            "orgao":      _clean(tds[1]),
+            "numero":     _clean(tds[2]),
+            "modalidade": _clean(tds[3]),
+            "cidade":     _clean(tds[4]),
+            "status":     _clean(tds[5]),
+            "data_pub":   _clean(tds[6])[:16],
+            "data_disp":  data_disp,
+        })
+
+    if not candidatos:
+        print(f"  [{portal}/{uf}] Listagem vazia")
+        return resultados
+
+    # 3. Pra cada candidato, GET detalhes (sem captcha, ~0.2s) e extrai objeto
+    def _objeto_de(link_view: str) -> str:
         try:
-            r = requests.post(
-                f"{base_url}/Process/GetProcessByParams",
-                data={
-                    "Organization": "",
-                    "Number":       "",
-                    "City":         "",
-                    "fkState":      uf,
-                    "fkModality":   "",
-                    "fkStatus":     "2",   # Publicado
-                    "fkDisputeKind": "",
-                    "DateStart":    DATA_I_DISPLAY,
-                    "DateEnd":      DATA_F_DISPLAY,
-                    "DateStartDispute": "",
-                    "DateEndDispute":   "",
-                    "Offset":       offset,
-                    "token":        "",
-                },
-                headers=headers,
-                timeout=25,
-            )
-            if r.status_code != 200:
-                print(f"  [{portal}/{uf}] HTTP {r.status_code}")
-                break
-            dados = r.json()
-            if isinstance(dados, dict) and dados.get("modal") == "error":
-                import re
-                msg = re.sub(r"<[^>]+>", " ", dados.get("html", ""))
-                msg = re.sub(r"\s+", " ", msg).strip()[:120]
-                print(f"  [{portal}/{uf}] ⚠️ Erro do portal: {msg}")
-                break
-            itens = dados if isinstance(dados, list) else dados.get("data", dados.get("Processos", dados.get("processes", [])))
-            if not itens:
-                break
-            for item in itens:
-                objeto = (
-                    item.get("Description") or item.get("Objeto") or
-                    item.get("objeto") or item.get("description") or ""
-                )
-                if not contem_keyword(objeto, uf):
-                    continue
-                url_edital = item.get("UrlProcess") or item.get("UrlEdital") or item.get("url") or ""
-                resultados.append({
-                    "portal":     portal,
-                    "uf":         uf,
-                    "orgao":      item.get("Organization") or item.get("NomeOrgao") or item.get("orgao") or "—",
-                    "objeto":     objeto[:200],
-                    "valor":      formatar_moeda(item.get("EstimatedValue") or item.get("ValorEstimado") or item.get("valor")),
-                    "modalidade": item.get("Modality") or item.get("Modalidade") or item.get("modalidade") or "—",
-                    "data":       str(item.get("PublicationDate") or item.get("DataPublicacao") or "")[:10] or "—",
-                    "link":       f"{base_url}{url_edital}" if url_edital.startswith("/") else url_edital or base_url,
-                })
-            # Paginação: cada página tem 20 itens
-            if len(itens) < 20:
-                break
-            offset += 20
-        except Exception as e:
-            print(f"  [{portal}/{uf}] {e}")
-            break
+            rr = session.get(link_view, timeout=20)
+            if rr.status_code != 200:
+                return ""
+            m_obj = re.search(r">Objeto:?</[^>]+>\s*<[^>]+>([^<]+)<", rr.text, re.IGNORECASE)
+            return html_lib.unescape(m_obj.group(1)).strip() if m_obj else ""
+        except Exception:
+            return ""
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        objetos = list(ex.map(_objeto_de, [c["link_view"] for c in candidatos]))
+
+    for cand, objeto in zip(candidatos, objetos):
+        if not objeto or not contem_keyword(objeto, uf):
+            continue
+        resultados.append({
+            "portal":     portal,
+            "uf":         uf,
+            "orgao":      cand["orgao"],
+            "objeto":     objeto[:200],
+            "valor":      "—",
+            "modalidade": cand["modalidade"],
+            "data":       cand["data_disp"] or cand["data_pub"][:10] or "—",
+            "link":       cand["link_view"],
+        })
     return resultados
 
 
 def buscar_bll() -> list[dict]:
     editais = []
     if not BLL_ATIVO:
-        print("[BLL] Pulado — secret BLL_PASS não configurado (plano pago necessário)")
+        falta = []
+        if not BLL_PASS: falta.append("BLL_PASS")
+        if not CAPTCHA_API_KEY: falta.append("CAPTCHA_API_KEY")
+        print(f"[BLL] Pulado — secrets faltando: {', '.join(falta)}")
         return editais
     sessao = _criar_sessao_bll("https://bllcompras.com")
     if not sessao:
@@ -468,7 +578,10 @@ def buscar_bll() -> list[dict]:
 def buscar_bnc() -> list[dict]:
     editais = []
     if not BLL_ATIVO:
-        print("[BNC] Pulado — secret BLL_PASS não configurado (plano pago necessário)")
+        falta = []
+        if not BLL_PASS: falta.append("BLL_PASS")
+        if not CAPTCHA_API_KEY: falta.append("CAPTCHA_API_KEY")
+        print(f"[BNC] Pulado — secrets faltando: {', '.join(falta)}")
         return editais
     sessao = _criar_sessao_bll("https://bnccompras.com")
     if not sessao:
