@@ -679,15 +679,28 @@ def _buscar_dioe_termo(termo: str) -> list[dict]:
                 continue
             id_pag = m_id.group(1); num_pag = m_id.group(2)
             link_pag = f"{DIOE_BASE}/consultaPublicaPDF.do?action=imgPaginaPNG&paginaCodigo={num_pag}&id={id_pag}"
+            # Servidor DIOE manda Content-Type=text/html pro PNG (bug deles).
+            # Baixamos o binário aqui — anexado depois no e-mail pra abrir clicável.
+            png_bytes = None
+            try:
+                r_png = s.get(link_pag, timeout=30)
+                if r_png.status_code == 200 and r_png.content.startswith(b"\x89PNG"):
+                    png_bytes = r_png.content
+            except Exception:
+                pass
+            edicao_str = m_edi.group(1) if m_edi else "sem-edicao"
+            png_filename = f"DIOE-PR_ed{edicao_str}_pag{num_pag}_{termo}.png"
             resultados.append({
-                "portal":     "DIOE-PR",
-                "uf":         "PR",
-                "orgao":      f"Diário {DIOE_DIARIO_NOME}",
-                "objeto":     f'"{termo}" — Edição {m_edi.group(1) if m_edi else "?"}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
-                "valor":      "—",
-                "modalidade": "—",
-                "data":       m_dat.group(1),
-                "link":       link_pag,
+                "portal":       "DIOE-PR",
+                "uf":           "PR",
+                "orgao":        f"Diário {DIOE_DIARIO_NOME}",
+                "objeto":       f'"{termo}" — Edição {edicao_str}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
+                "valor":        "—",
+                "modalidade":   "—",
+                "data":         m_dat.group(1),
+                "link":         link_pag,
+                "png_bytes":    png_bytes,
+                "png_filename": png_filename,
             })
     except Exception as e:
         print(f"  [DIOE/{termo}] erro: {e}")
@@ -862,14 +875,36 @@ def montar_html(editais: list[dict]) -> str:
 # ──────────────────────────────────────────────
 # ENVIAR E-MAIL VIA GMAIL SMTP
 # ──────────────────────────────────────────────
-def enviar_email(html: str, total: int):
+def enviar_email(html: str, total: int, editais: list[dict] | None = None):
+    from email.mime.image import MIMEImage
     assunto = f"Licitações JK — {total} edital(is) vigentes | publicações {DATA_I_DISPLAY}-{DATA_F_DISPLAY}"
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = assunto
     msg["From"]    = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
     msg["To"]      = EMAIL_DESTINO
     msg["Cc"]      = EMAIL_COPIA
-    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html, "html", "utf-8"))
+    msg.attach(alt)
+
+    anexados = 0
+    bytes_total = 0
+    LIMITE_BYTES = 20 * 1024 * 1024  # Gmail aceita ~25MB; deixamos folga
+    for e in editais or []:
+        png = e.get("png_bytes")
+        if not png:
+            continue
+        if bytes_total + len(png) > LIMITE_BYTES:
+            print(f"[EMAIL] Anexo pulado (limite 20MB): {e.get('png_filename')}")
+            continue
+        img = MIMEImage(png, _subtype="png")
+        img.add_header("Content-Disposition", "attachment", filename=e["png_filename"])
+        msg.attach(img)
+        anexados += 1
+        bytes_total += len(png)
+    if anexados:
+        print(f"[EMAIL] {anexados} anexos PNG ({bytes_total/1024:.0f} KB)")
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
@@ -911,5 +946,5 @@ if __name__ == "__main__":
 
     print(f"\n=== Total único: {len(unicos)} editais ===\n")
     html = montar_html(unicos)
-    enviar_email(html, len(unicos))
+    enviar_email(html, len(unicos), unicos)
     print("=== Concluído ===")
