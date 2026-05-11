@@ -678,27 +678,33 @@ def _buscar_dioe_termo(termo: str) -> list[dict]:
             if not (m_id and m_dat):
                 continue
             id_pag = m_id.group(1); num_pag = m_id.group(2)
-            link_pag = f"{DIOE_BASE}/consultaPublicaPDF.do?action=imgPaginaPNG&paginaCodigo={num_pag}&id={id_pag}"
-            # Servidor DIOE manda Content-Type=text/html pro PNG (bug deles).
-            # Baixamos o binário aqui — anexado depois no e-mail pra abrir clicável.
+            link_png = f"{DIOE_BASE}/consultaPublicaPDF.do?action=imgPaginaPNG&paginaCodigo={num_pag}&id={id_pag}"
+            # PNG vem em resolução baixa fixa (servidor ignora params de tamanho).
+            # Anexamos como preview rápido; link clicável aponta pra busca da edição no DIOE,
+            # de onde dá pra baixar o PDF vetorial legível (exige resolver 1 captcha no site).
             png_bytes = None
             try:
-                r_png = s.get(link_pag, timeout=30)
+                r_png = s.get(link_png, timeout=30)
                 if r_png.status_code == 200 and r_png.content.startswith(b"\x89PNG"):
                     png_bytes = r_png.content
             except Exception:
                 pass
-            edicao_str = m_edi.group(1) if m_edi else "sem-edicao"
-            png_filename = f"DIOE-PR_ed{edicao_str}_pag{num_pag}_{termo}.png"
+            edicao_str = m_edi.group(1) if m_edi else ""
+            link_edicao = (
+                f"{DIOE_BASE}/consultaPublicaPDF.do?action=pgLocalizar&enviado=true"
+                f"&numero={edicao_str}&diarioCodigo={DIOE_DIARIO_CODIGO}"
+                f"&dataInicialEntrada=&dataFinalEntrada=&search="
+            ) if edicao_str else link_png
+            png_filename = f"DIOE-PR_ed{edicao_str or 'sem-edicao'}_pag{num_pag}_{termo}.png"
             resultados.append({
                 "portal":       "DIOE-PR",
                 "uf":           "PR",
                 "orgao":        f"Diário {DIOE_DIARIO_NOME}",
-                "objeto":       f'"{termo}" — Edição {edicao_str}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
+                "objeto":       f'"{termo}" — Edição {edicao_str or "?"}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
                 "valor":        "—",
                 "modalidade":   "—",
                 "data":         m_dat.group(1),
-                "link":         link_pag,
+                "link":         link_edicao,
                 "png_bytes":    png_bytes,
                 "png_filename": png_filename,
             })
@@ -716,11 +722,15 @@ def buscar_dioe_pr() -> list[dict]:
     with ThreadPoolExecutor(max_workers=3) as ex:
         for matches in ex.map(_buscar_dioe_termo, DIOE_KEYWORDS):
             editais += matches
-    # Dedup por (data, id_pagina) — mesmo edital pode aparecer em vários termos
+    # Dedup por (data, edição, página) — mesmo edital pode aparecer em vários termos.
+    # png_filename inclui ed+pag+termo, mas dedupamos sem o termo pra colapsar matches do mesmo edital.
+    import re as _re
     vistos = set()
     unicos = []
     for e in editais:
-        chave = (e["data"], e["link"])
+        nome = e.get("png_filename", "")
+        m = _re.match(r"DIOE-PR_(ed[^_]+)_(pag\d+)_", nome)
+        chave = (e["data"], m.group(1), m.group(2)) if m else (e["data"], nome)
         if chave in vistos:
             continue
         vistos.add(chave)
