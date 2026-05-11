@@ -10,7 +10,7 @@ on:
 jobs:
   monitorar:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -22,10 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar dependências
-        run: pip install requests
-
-      - name: Instalar 2captcha
-        run: pip install 2captcha-python
+        run: pip install requests 2captcha-python anthropic
 
       - name: Executar monitoramento
         env:
@@ -33,4 +30,5 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           BLL_PASS: ${{ secrets.BLL_PASS }}
           CAPTCHA_API_KEY: ${{ secrets.CAPTCHA_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python monitor_licitacoes.py

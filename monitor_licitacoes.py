@@ -253,6 +253,9 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
                 "data":       data_abertura or (item.get("dataPublicacaoPncp") or "")[:10],
                 "link":       f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if cnpj else "https://pncp.gov.br/app/editais",
                 "_chave":     item.get("numeroControlePNCP", objeto[:40]),
+                "_cnpj":      cnpj,
+                "_ano":       str(ano),
+                "_seq":       str(seq),
             })
         total_pag = dados.get("totalPaginas", 1)
         if pagina >= total_pag or pagina >= 5:
@@ -340,6 +343,14 @@ def buscar_pncp_texto() -> list[dict]:
             item_url = item.get("item_url", "")
             link = f"https://pncp.gov.br/app/editais{item_url.replace('/compras', '')}" if item_url else "https://pncp.gov.br/app/editais"
 
+            # Extrai cnpj/ano/seq do item_url pra Fase 2 da triagem.
+            # Padrão típico: /orgaos/{cnpj}/compras/{ano}/{seq}
+            import re as _re_pncp
+            _m = _re_pncp.search(r"/orgaos/(\d+)/compras/(\d{4})/(\d+)", item_url or "")
+            _cnpj_t = _m.group(1) if _m else ""
+            _ano_t  = _m.group(2) if _m else ""
+            _seq_t  = _m.group(3) if _m else ""
+
             editais.append({
                 "portal":     "PNCP",
                 "uf":         item.get("uf", "—"),
@@ -349,6 +360,9 @@ def buscar_pncp_texto() -> list[dict]:
                 "modalidade": item.get("modalidade_licitacao_nome", "—"),
                 "data":       data_abertura or data_pub,
                 "link":       link,
+                "_cnpj":      _cnpj_t,
+                "_ano":       _ano_t,
+                "_seq":       _seq_t,
             })
 
     print(f"[PNCP Texto] {len(editais)} editais complementares encontrados")
@@ -922,4 +936,21 @@ if __name__ == "__main__":
     print(f"\n=== Total único: {len(unicos)} editais ===\n")
     html = montar_html(unicos)
     enviar_email(html, len(unicos))
+
+    # Triagem inteligente — envia email separado só com matches da carteira JK.
+    # Isolada em try/except: se falhar, o email principal já foi enviado.
+    try:
+        from triagem_editais import triar, enviar_email_triagem
+        matches = triar(unicos)
+        enviar_email_triagem(
+            matches,
+            gmail_user=GMAIL_USER,
+            gmail_pass=GMAIL_APP_PASSWORD,
+            destino=EMAIL_DESTINO,
+            copia=EMAIL_COPIA,
+            from_name=EMAIL_FROM_NAME,
+        )
+    except Exception as e:
+        print(f"[TRIAGEM] Erro não-fatal: {e}")
+
     print("=== Concluído ===")
