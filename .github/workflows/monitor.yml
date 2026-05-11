@@ -2,7 +2,7 @@ name: Monitoramento Diário de Licitações
 
 on:
   schedule:
-    - cron: "0 10 * * *"   # 10h UTC = 7h Brasília
+    - cron: "7 10 * * *"   # 10h07 UTC = 7h07 Brasília (minuto deslocado p/ fugir da fila do GH Actions)
   workflow_dispatch:        # permite rodar manualmente
   push:
     branches: [main]        # dispara a cada push no main
