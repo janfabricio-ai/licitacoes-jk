@@ -678,35 +678,25 @@ def _buscar_dioe_termo(termo: str) -> list[dict]:
             if not (m_id and m_dat):
                 continue
             id_pag = m_id.group(1); num_pag = m_id.group(2)
-            link_png = f"{DIOE_BASE}/consultaPublicaPDF.do?action=imgPaginaPNG&paginaCodigo={num_pag}&id={id_pag}"
-            # PNG vem em resolução baixa fixa (servidor ignora params de tamanho).
-            # Anexamos como preview rápido; link clicável aponta pra busca da edição no DIOE,
-            # de onde dá pra baixar o PDF vetorial legível (exige resolver 1 captcha no site).
-            png_bytes = None
-            try:
-                r_png = s.get(link_png, timeout=30)
-                if r_png.status_code == 200 and r_png.content.startswith(b"\x89PNG"):
-                    png_bytes = r_png.content
-            except Exception:
-                pass
             edicao_str = m_edi.group(1) if m_edi else ""
+            # Link clicável aponta pra busca da edição no DIOE — usuário resolve 1 captcha
+            # no site e baixa o PDF vetorial legível. O PNG bruto da página existe em
+            # ?action=imgPaginaPNG mas vem em resolução baixa demais pra ser útil.
             link_edicao = (
                 f"{DIOE_BASE}/consultaPublicaPDF.do?action=pgLocalizar&enviado=true"
                 f"&numero={edicao_str}&diarioCodigo={DIOE_DIARIO_CODIGO}"
                 f"&dataInicialEntrada=&dataFinalEntrada=&search="
-            ) if edicao_str else link_png
-            png_filename = f"DIOE-PR_ed{edicao_str or 'sem-edicao'}_pag{num_pag}_{termo}.png"
+            ) if edicao_str else f"{DIOE_BASE}/consultaPublicaPDF.do?action=pgLocalizar"
             resultados.append({
-                "portal":       "DIOE-PR",
-                "uf":           "PR",
-                "orgao":        f"Diário {DIOE_DIARIO_NOME}",
-                "objeto":       f'"{termo}" — Edição {edicao_str or "?"}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
-                "valor":        "—",
-                "modalidade":   "—",
-                "data":         m_dat.group(1),
-                "link":         link_edicao,
-                "png_bytes":    png_bytes,
-                "png_filename": png_filename,
+                "portal":     "DIOE-PR",
+                "uf":         "PR",
+                "orgao":      f"Diário {DIOE_DIARIO_NOME}",
+                "objeto":     f'"{termo}" — Edição {edicao_str or "?"}, pág {num_pag}' + (f" (relevância {m_rel.group(1)}%)" if m_rel else ""),
+                "valor":      "—",
+                "modalidade": "—",
+                "data":       m_dat.group(1),
+                "link":       link_edicao,
+                "_dedup_key": (edicao_str, num_pag),
             })
     except Exception as e:
         print(f"  [DIOE/{termo}] erro: {e}")
@@ -723,17 +713,14 @@ def buscar_dioe_pr() -> list[dict]:
         for matches in ex.map(_buscar_dioe_termo, DIOE_KEYWORDS):
             editais += matches
     # Dedup por (data, edição, página) — mesmo edital pode aparecer em vários termos.
-    # png_filename inclui ed+pag+termo, mas dedupamos sem o termo pra colapsar matches do mesmo edital.
-    import re as _re
     vistos = set()
     unicos = []
     for e in editais:
-        nome = e.get("png_filename", "")
-        m = _re.match(r"DIOE-PR_(ed[^_]+)_(pag\d+)_", nome)
-        chave = (e["data"], m.group(1), m.group(2)) if m else (e["data"], nome)
+        chave = (e["data"],) + e.get("_dedup_key", (e["link"],))
         if chave in vistos:
             continue
         vistos.add(chave)
+        e.pop("_dedup_key", None)
         unicos.append(e)
     print(f"[DIOE-PR] {len(unicos)} matches únicos encontrados ({len(editais)} brutos)")
     return unicos
@@ -885,36 +872,14 @@ def montar_html(editais: list[dict]) -> str:
 # ──────────────────────────────────────────────
 # ENVIAR E-MAIL VIA GMAIL SMTP
 # ──────────────────────────────────────────────
-def enviar_email(html: str, total: int, editais: list[dict] | None = None):
-    from email.mime.image import MIMEImage
+def enviar_email(html: str, total: int):
     assunto = f"Licitações JK — {total} edital(is) vigentes | publicações {DATA_I_DISPLAY}-{DATA_F_DISPLAY}"
-    msg = MIMEMultipart("mixed")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = assunto
     msg["From"]    = f"{EMAIL_FROM_NAME} <{GMAIL_USER}>"
     msg["To"]      = EMAIL_DESTINO
     msg["Cc"]      = EMAIL_COPIA
-
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(html, "html", "utf-8"))
-    msg.attach(alt)
-
-    anexados = 0
-    bytes_total = 0
-    LIMITE_BYTES = 20 * 1024 * 1024  # Gmail aceita ~25MB; deixamos folga
-    for e in editais or []:
-        png = e.get("png_bytes")
-        if not png:
-            continue
-        if bytes_total + len(png) > LIMITE_BYTES:
-            print(f"[EMAIL] Anexo pulado (limite 20MB): {e.get('png_filename')}")
-            continue
-        img = MIMEImage(png, _subtype="png")
-        img.add_header("Content-Disposition", "attachment", filename=e["png_filename"])
-        msg.attach(img)
-        anexados += 1
-        bytes_total += len(png)
-    if anexados:
-        print(f"[EMAIL] {anexados} anexos PNG ({bytes_total/1024:.0f} KB)")
+    msg.attach(MIMEText(html, "html", "utf-8"))
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
@@ -956,5 +921,5 @@ if __name__ == "__main__":
 
     print(f"\n=== Total único: {len(unicos)} editais ===\n")
     html = montar_html(unicos)
-    enviar_email(html, len(unicos), unicos)
+    enviar_email(html, len(unicos))
     print("=== Concluído ===")
