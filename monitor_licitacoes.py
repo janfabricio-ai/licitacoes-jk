@@ -156,7 +156,7 @@ KEYWORDS = KEYWORDS_PRIMARIAS + KEYWORDS_COMPOSTAS
 
 HOJE       = datetime.now()
 HOJE_DATE  = HOJE.date()
-DIAS_ATRAS = HOJE - timedelta(days=4)   # janela de 5 dias para não perder editais de fim de semana
+DIAS_ATRAS = HOJE - timedelta(days=4)   # janela de 5 dias retroativos (unificada)
 DATA_I     = DIAS_ATRAS.strftime("%Y%m%d")
 DATA_F     = HOJE.strftime("%Y%m%d")
 DATA_I_DISPLAY = DIAS_ATRAS.strftime("%d/%m/%Y")
@@ -166,21 +166,35 @@ DATA_F_DISPLAY = HOJE.strftime("%d/%m/%Y")
 # ──────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────
-def edital_vigente(data_abertura: str) -> bool:
-    """True se data de abertura/disputa >= hoje. Aceita campo vazio (mantém)."""
-    if not data_abertura:
-        return True
-    s = data_abertura.strip()[:10]
+def _parse_data(s: str):
+    s = (s or "").strip()[:10]
+    if not s:
+        return None
     try:
         if "/" in s:
             d, m, y = s.split("/")
-            dt = datetime(int(y), int(m), int(d)).date()
-        else:
-            y, mo, d = s.split("-")
-            dt = datetime(int(y), int(mo), int(d)).date()
-        return dt >= HOJE_DATE
+            return datetime(int(y), int(m), int(d)).date()
+        y, mo, d = s.split("-")
+        return datetime(int(y), int(mo), int(d)).date()
     except Exception:
-        return True
+        return None
+
+
+def edital_vigente(data_abertura: str, data_publicacao: str = "") -> bool:
+    """True se a sessão de abertura ainda não venceu.
+
+    - data_abertura preenchida: aceita se >= hoje.
+    - data_abertura vazia (típico de Dispensa/Inexigibilidade no PNCP):
+      aceita só se data_publicacao estiver dentro dos últimos 8 dias.
+    - Sem nenhuma das duas: rejeita.
+    """
+    dt_abertura = _parse_data(data_abertura)
+    if dt_abertura is not None:
+        return dt_abertura >= HOJE_DATE
+    dt_pub = _parse_data(data_publicacao)
+    if dt_pub is None:
+        return False
+    return (HOJE_DATE - dt_pub).days <= 8
 
 
 def formatar_moeda(valor) -> str:
@@ -238,7 +252,8 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
             if not contem_keyword(objeto, uf):
                 continue
             data_abertura = (item.get("dataAberturaProposta") or item.get("dataEncerramentoProposta") or "")[:10]
-            if not edital_vigente(data_abertura):
+            data_pub_pncp = (item.get("dataPublicacaoPncp") or "")[:10]
+            if not edital_vigente(data_abertura, data_pub_pncp):
                 continue
             cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
             ano  = item.get("anoCompra", "")
@@ -250,7 +265,7 @@ def _buscar_pncp_combinacao(uf: str, cod_mod: int, nome_mod: str) -> list[dict]:
                 "objeto":     objeto[:200],
                 "valor":      formatar_moeda(item.get("valorTotalEstimado")),
                 "modalidade": nome_mod,
-                "data":       data_abertura or (item.get("dataPublicacaoPncp") or "")[:10],
+                "data":       data_abertura or data_pub_pncp,
                 "link":       f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}" if cnpj else "https://pncp.gov.br/app/editais",
                 "_chave":     item.get("numeroControlePNCP", objeto[:40]),
                 "_cnpj":      cnpj,
@@ -295,7 +310,7 @@ def buscar_pncp_publicacoes() -> list[dict]:
 def buscar_pncp_texto() -> list[dict]:
     editais = []
     vistos  = set()
-    DATA_CORTE = (HOJE - timedelta(days=30)).strftime("%Y-%m-%d")
+    DATA_CORTE = (HOJE - timedelta(days=5)).strftime("%Y-%m-%d")
 
     TERMOS = [
         # Pilar 1 — Material gráfico
@@ -330,7 +345,7 @@ def buscar_pncp_texto() -> list[dict]:
             if data_pub < DATA_CORTE:
                 continue
             data_abertura = (item.get("data_abertura_proposta") or item.get("data_encerramento_proposta") or "")[:10]
-            if not edital_vigente(data_abertura):
+            if not edital_vigente(data_abertura, data_pub):
                 continue
             objeto = item.get("description", "") or item.get("title", "")
             if not contem_keyword(objeto, item.get("uf", "")):
@@ -662,8 +677,8 @@ def _buscar_dioe_termo(termo: str) -> list[dict]:
         captcha_texto = _resolver_captcha_image(base64.b64encode(r_img.content).decode())
         if not captcha_texto:
             return resultados
-        # 3. Busca (janela 15 dias retroativos — editais publicados ainda em prazo)
-        data_ini = (HOJE - timedelta(days=15)).strftime("%d/%m/%Y")
+        # 3. Busca (janela 5 dias retroativos — unificada com PNCP/BLL/BNC)
+        data_ini = (HOJE - timedelta(days=5)).strftime("%d/%m/%Y")
         data_fim = HOJE.strftime("%d/%m/%Y")
         r = s.get(f"{DIOE_BASE}/consultaPublicaPDF.do", params={
             "action":               "pgLocalizar",
@@ -829,6 +844,11 @@ def montar_html(editais: list[dict]) -> str:
         for i, e in enumerate(editais):
             bg = "#f9f9f9" if i % 2 == 0 else "#ffffff"
             link_html = f'<a href="{e["link"]}" style="color:#1a73e8;white-space:nowrap;">Ver edital</a>' if e.get("link") else "—"
+            is_dioe = e['portal'] == "DIOE-PR"
+            data_cell = (
+                f'{e["data"]}<br><span style="color:#b35900;font-size:11px;font-weight:600;">⚠ verificar prazo no PDF</span>'
+                if is_dioe else e['data']
+            )
             linhas += f"""
             <tr style="background:{bg};">
               <td style="padding:8px 10px;border:1px solid #e0e0e0;">{e['portal']}</td>
@@ -837,7 +857,7 @@ def montar_html(editais: list[dict]) -> str:
               <td style="padding:8px 10px;border:1px solid #e0e0e0;">{e['objeto']}</td>
               <td style="padding:8px 10px;border:1px solid #e0e0e0;white-space:nowrap;">{e['valor']}</td>
               <td style="padding:8px 10px;border:1px solid #e0e0e0;">{e['modalidade']}</td>
-              <td style="padding:8px 10px;border:1px solid #e0e0e0;white-space:nowrap;">{e['data']}</td>
+              <td style="padding:8px 10px;border:1px solid #e0e0e0;white-space:nowrap;">{data_cell}</td>
               <td style="padding:8px 10px;border:1px solid #e0e0e0;">{link_html}</td>
             </tr>"""
 
