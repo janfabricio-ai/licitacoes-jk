@@ -238,11 +238,44 @@ def _extrair_specs_um(client, edital: dict) -> dict:
     return edital
 
 
+# Pré-filtro gratuito por palavra-chave (radicais, sem acento, minúsculo).
+# Objetivo: só mandar pra IA o que tem chance real de ser carteira JK (corta custo).
+# Prefere recall: radicais curtos e sinônimos; a IA descarta os falsos positivos.
+_RADICAIS_JK = (
+    "pasta", "cartao de visita", "cartoes de visita", "cartilha", "folder", "folheto",
+    "panfleto", "flyer", "bloco", "talao", "talonario", "cracha", "livro", "brochura",
+    "encaderna", "convite", "agenda", "certificado", "diploma", "revista", "cartaz",
+    "poster", "broche", "grafic", "impress", "papel", "receituario", "autocopiativ",
+    "proerd", "fachada", "banner", "faixa", "lona", "adesiv", "vinil", "placa",
+    "sinaliza", "letreiro", "luminoso", "totem", "backdrop", "painel", "comunicacao visual",
+    "acm", "letra caixa", "carimbo", "etiqueta", "formulario", "carne", "envelope",
+    "calendario", "sacola", "plotagem", "diptico", "triptico", "cartao",
+)
+
+
+def _normalizar(txt: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFD", (txt or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+def _passa_prefiltro(edital: dict) -> bool:
+    texto = _normalizar(f"{edital.get('objeto') or ''} {edital.get('orgao') or ''}")
+    return any(r in texto for r in _RADICAIS_JK)
+
+
 def triar(editais: list[dict]) -> list[dict]:
-    """Roda Fase 1 em todos os editais, Fase 2 só nos PNCP que passaram.
+    """Pré-filtro por palavra-chave (grátis), Fase 1 só nos que passaram,
+    Fase 2 só nos PNCP que passaram a Fase 1.
     Retorna lista de matches (subset). Lista vazia se nada bateu."""
     if not ANTHROPIC_API_KEY or Anthropic is None:
         print("[TRIAGEM] Pulado — ANTHROPIC_API_KEY ou lib anthropic ausente")
+        return []
+
+    total = len(editais)
+    editais = [e for e in editais if _passa_prefiltro(e)]
+    print(f"[TRIAGEM] Pré-filtro: {len(editais)}/{total} editais seguem pra IA")
+    if not editais:
         return []
 
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
